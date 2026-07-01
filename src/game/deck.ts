@@ -25,7 +25,7 @@ export function shuffleDeck(deck: Card[], seed: number): Card[] {
   let s = seed;
   for (let i = cards.length - 1; i > 0; i--) {
     s = (s * 1664525 + 1013904223) & 0xffffffff;
-    const j = s >>> 0 % (i + 1);
+    const j = (s >>> 0) % (i + 1);
     [cards[i], cards[j]] = [cards[j], cards[i]];
   }
   return cards;
@@ -117,16 +117,52 @@ export function drawFromDeck(
   return { hand: newHand, deck: remainingDeck, discard: remainingDiscard };
 }
 
-/** Calculate final standings: first to empty hand = winner, last = Durak. */
+/** Calculate final standings: first to empty hand = winner, last = Durak. Ties share the same place. */
 export function computeStandings(
   players: { telegram_id: number; hand: Card[]; seat_index: number }[],
 ): { telegram_id: number; seat_index: number; place: number; label: string }[] {
   const sorted = [...players].sort((a, b) => a.hand.length - b.hand.length);
-  return sorted.map((p, i) => {
-    const place = i + 1;
-    const label = i === 0 ? "🎉 Winner" : i === sorted.length - 1 ? "🤡 Durak" : `${place}${ordinal(place)} place`;
-    return { telegram_id: p.telegram_id, seat_index: p.seat_index, place, label };
-  });
+  const placements: { telegram_id: number; seat_index: number; place: number; label: string }[] = [];
+  let currentPlace = 1;
+
+  for (let i = 0; i < sorted.length; i++) {
+    // If this player has the same hand size as the previous, they share the place
+    if (i > 0 && sorted[i].hand.length === sorted[i - 1].hand.length) {
+      // Same place number as the previous player
+    } else {
+      currentPlace = i + 1;
+    }
+    const p = sorted[i];
+
+    let label: string;
+    if (p.hand.length === 0 && currentPlace === 1) {
+      label = "🎉 Winner";
+    } else if (p.hand.length === 0) {
+      label = `🏆 ${currentPlace}${ordinal(currentPlace)}`;
+    } else if (i === sorted.length - 1) {
+      label = "🤡 Durak";
+    } else {
+      label = `${currentPlace}${ordinal(currentPlace)} place`;
+    }
+
+    placements.push({
+      telegram_id: p.telegram_id,
+      seat_index: p.seat_index,
+      place: currentPlace,
+      label,
+    });
+  }
+
+  // If EVERYONE has empty hands, it's a draw — override labels
+  const allEmpty = sorted.every(p => p.hand.length === 0);
+  if (allEmpty) {
+    return placements.map(pm => ({
+      ...pm,
+      label: pm.place === 1 ? "🤝 Draw — no cards left" : "🤝 Draw",
+    }));
+  }
+
+  return placements;
 }
 
 function ordinal(n: number): string {

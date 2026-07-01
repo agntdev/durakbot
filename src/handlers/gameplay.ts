@@ -3,6 +3,7 @@ import type { Ctx } from "../bot.js";
 import {
   inlineButton,
   inlineKeyboard,
+  registerMainMenuItem,
 } from "../toolkit/index.js";
 import {
   getPlayer,
@@ -16,6 +17,9 @@ import {
   SUIT_EMOJI,
 } from "../game/types.js";
 import type { Card } from "../game/types.js";
+
+// Register "Leave Game" in the main menu
+registerMainMenuItem({ label: "🚪 Leave game", data: "game:leave", order: 60 });
 
 const composer = new Composer<Ctx>();
 
