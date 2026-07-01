@@ -106,14 +106,15 @@ composer.callbackQuery(/^game:pass:(.+)$/, async (ctx) => {
     // Best-effort
   }
 
-  // If round is over, notify defender
-  if (game.round_over) {
+  // Check if all attackers passed — defender needs to act
+  const allAttackersPassed = game.attacker_ids.length > 0 && game.attacker_ids.every(ai => game.passed_ids.includes(ai));
+  if (allAttackersPassed) {
     try {
       const defender = players.find(p => p.seat_index === game.current_defender_index);
       if (defender) {
         await ctx.api.sendMessage(
           defender.telegram_id,
-          "🛡️ It's your turn to defend! Reply with /hand to see your options.",
+          "🛡️ All attackers passed — it's your turn to defend or take the cards. Check /hand for your options.",
         );
       }
     } catch {

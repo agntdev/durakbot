@@ -133,6 +133,9 @@ async function showHand(ctx: Ctx) {
     }
   }
 
+  if (game.status === "playing") {
+    buttons.push([inlineButton("🚪 Leave game", `game:leave`)]);
+  }
   buttons.push([inlineButton("📋 View table", "menu:table")]);
   buttons.push([inlineButton("⬅️ Back to menu", "menu:main")]);
 

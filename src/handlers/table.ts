@@ -90,6 +90,9 @@ async function showTable(ctx: Ctx) {
     buttons.push([inlineButton("🎫 Join", `lobby:join:${game.game_code}`)]);
     buttons.push([inlineButton("▶️ Start game", `lobby:begin:${game.game_code}`)]);
   }
+  if (game.status === "playing" || game.status === "lobby") {
+    buttons.push([inlineButton("🚪 Leave game", "game:leave")]);
+  }
   buttons.push([inlineButton("🖐 My hand", "menu:hand")]);
   buttons.push([inlineButton("⬅️ Back to menu", "menu:main")]);
 
