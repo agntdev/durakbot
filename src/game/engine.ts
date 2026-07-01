@@ -130,12 +130,22 @@ export async function joinGame(
     status: "playing",
     joined_at: now(),
   };
+  // Save player FIRST so a failed player save leaves the count unchanged.
+  // If the game save fails after, remove the player to keep state consistent.
+  await savePlayer(player);
   game.player_count = count + 1;
   {
     const err = await saveGameAtomic(game);
-    if (err) return { ok: false, error: err, game, player };
+    if (err) {
+      // Roll back: remove the orphan player
+      try {
+        await removePlayer(player.telegram_id, player.game_code);
+      } catch {
+        // Best-effort rollback
+      }
+      return { ok: false, error: err, game, player };
+    }
   }
-  await savePlayer(player);
   await saveAction({ player_id: telegramId, game_code: game.game_code, action_type: "join", timestamp: now() });
 
   return { ok: true, game, player };
@@ -169,7 +179,7 @@ export async function startGame(
     await savePlayer(player);
   }
 
-  const firstAttackerIdx = pickFirstAttacker(players, game.trump_suit);
+  const firstAttackerIdx = pickFirstAttacker(players, game.trump_suit, game.version);
 
   game.status = "playing";
   game.deck = deck;
@@ -553,13 +563,43 @@ export async function leaveGame(
     game.discard.push(...player.hand);
     player.hand = [];
     await savePlayer(player);
+
+    const allPlayers = await getGamePlayers(player.game_code);
+    const n = allPlayers.length;
+    const activePlayers = allPlayers.filter(p => p.status === "playing");
+
+    // If the leaving player was the current attacker or defender, reassign to next active player
+    if (activePlayers.length > 0) {
+      if (player.seat_index === game.current_attacker_index) {
+        let nextIdx = (game.current_attacker_index + 1) % n;
+        // Keep stepping until we find an active player
+        for (let tries = 0; tries < n; tries++) {
+          if (allPlayers.find(p => p.seat_index === nextIdx && p.status === "playing")) {
+            game.current_attacker_index = nextIdx;
+            game.attacker_ids = [nextIdx];
+            game.passed_ids = [];
+            break;
+          }
+          nextIdx = (nextIdx + 1) % n;
+        }
+      }
+      if (player.seat_index === game.current_defender_index) {
+        let nextIdx = (game.current_defender_index + 1) % n;
+        for (let tries = 0; tries < n; tries++) {
+          if (allPlayers.find(p => p.seat_index === nextIdx && p.status === "playing")) {
+            game.current_defender_index = nextIdx;
+            break;
+          }
+          nextIdx = (nextIdx + 1) % n;
+        }
+      }
+    }
+
     {
       const err = await saveGameAtomic(game);
       if (err) return { ok: false, error: err };
     }
 
-    const allPlayers = await getGamePlayers(player.game_code);
-    const activePlayers = allPlayers.filter(p => p.status === "playing");
     if (activePlayers.length <= 1) {
       game.status = "finished";
       {

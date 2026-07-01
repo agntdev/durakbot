@@ -43,8 +43,9 @@ export function trumpSuitFromDeck(deck: Card[]): Suit {
 
 /**
  * Pick the first attacker: lowest trump rank, or random if no trumps.
+ * Uses a deterministic seed for reproducibility (same as shuffleDeck's LCG).
  */
-export function pickFirstAttacker(players: { hand: Card[] }[], trump: Suit): number {
+export function pickFirstAttacker(players: { hand: Card[] }[], trump: Suit, seed: number): number {
   let bestIdx = -1;
   let bestRank = -1;
   for (let i = 0; i < players.length; i++) {
@@ -60,7 +61,12 @@ export function pickFirstAttacker(players: { hand: Card[] }[], trump: Suit): num
       }
     }
   }
-  return bestIdx >= 0 ? bestIdx : Math.floor(Math.random() * players.length);
+  // Fallback to deterministic random if no player holds a trump
+  if (bestIdx >= 0) return bestIdx;
+  // Use seeded LCG (same as shuffleDeck) for determinism
+  let s = seed;
+  s = (s * 1664525 + 1013904223) & 0xffffffff;
+  return (s >>> 0) % players.length;
 }
 
 /** Check if a card can beat an attack card given the trump suit. */

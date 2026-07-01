@@ -140,7 +140,19 @@ async function showHand(ctx: Ctx) {
   buttons.push([inlineButton("⬅️ Back to menu", "menu:main")]);
 
   const msgText = lines.join("\n");
-  await ctx.reply(msgText, { reply_markup: inlineKeyboard(buttons) });
+  // Send hand via DM — never in a group chat (privacy)
+  await ctx.api.sendMessage(userId, msgText, { reply_markup: inlineKeyboard(buttons) });
+
+  // Acknowledge in the chat the command came from
+  if (ctx.callbackQuery) {
+    try {
+      await ctx.editMessageText("✉️ Hand sent via DM");
+    } catch {
+      // Best-effort edit
+    }
+  } else {
+    await ctx.reply("✉️ Sent your hand in a DM.");
+  }
 }
 
 // Catch noop callback (informational buttons we don't need to handle)
