@@ -15,6 +15,7 @@ import {
 } from "./deck.js";
 import {
   saveGame,
+  saveGameWithVersion,
   getGame,
   savePlayer,
   getPlayer,
@@ -24,6 +25,7 @@ import {
   removeAllPlayers,
   saveAction,
   deleteGame,
+  ConcurrentModificationError,
 } from "./store.js";
 import { now } from "./clock.js";
 import { cardKey } from "./types.js";
@@ -83,8 +85,9 @@ export async function createGame(
     passed_ids: [],
     round_over: false,
     created_at: now(),
+    version: 0,
   };
-  await saveGame(game);
+  await saveGameWithVersion(game);
 
   const player: Player = {
     telegram_id: hostId,
@@ -128,7 +131,10 @@ export async function joinGame(
     joined_at: now(),
   };
   game.player_count = count + 1;
-  await saveGame(game);
+  {
+    const err = await saveGameAtomic(game);
+    if (err) return { ok: false, error: err, game, player };
+  }
   await savePlayer(player);
   await saveAction({ player_id: telegramId, game_code: game.game_code, action_type: "join", timestamp: now() });
 
@@ -173,7 +179,10 @@ export async function startGame(
   game.passed_ids = [];
   game.table_cards = [];
   game.round_over = false;
-  await saveGame(game);
+  {
+    const err = await saveGameAtomic(game);
+    if (err) return { ok: false, error: err };
+  }
   await saveAction({ player_id: telegramId, game_code: code, action_type: "start", timestamp: now() });
 
   return { ok: true, game, players };
@@ -236,7 +245,10 @@ export async function attackPhase(
   }
 
   await savePlayer(player);
-  await saveGame(game);
+  {
+    const err = await saveGameAtomic(game);
+    if (err) return { ok: false, error: err };
+  }
   await saveAction({ player_id: telegramId, game_code: code, action_type: `attack:${cardKey(attackCard)}`, timestamp: now() });
 
   return { ok: true, game, players };
@@ -262,14 +274,20 @@ export async function passAttack(
   if (game.round_over) return { ok: false, error: "The round is already over." };
 
   game.passed_ids.push(player.seat_index);
-  await saveGame(game);
+  {
+    const err = await saveGameAtomic(game);
+    if (err) return { ok: false, error: err };
+  }
   await saveAction({ player_id: telegramId, game_code: code, action_type: "pass", timestamp: now() });
 
   // Check if all attackers have passed
   const allPassed = game.attacker_ids.every(ai => game.passed_ids.includes(ai));
   if (allPassed && game.table_cards.length > 0) {
     game.round_over = true;
-    await saveGame(game);
+    {
+      const err = await saveGameAtomic(game);
+      if (err) return { ok: false, error: err };
+    }
   }
 
   return { ok: true, game, players };
@@ -291,6 +309,7 @@ export async function defendPhase(
   const players = await getGamePlayers(code);
   const defender = players.find(p => p.telegram_id === telegramId && p.seat_index === game.current_defender_index);
   if (!defender) return { ok: false, error: "You're not the defender." };
+  if (game.round_over) return { ok: false, error: "The round is already over — resolve it first." };
 
   if (tableIdx < 0 || tableIdx >= game.table_cards.length) {
     return { ok: false, error: "No attack to defend at that position." };
@@ -311,7 +330,10 @@ export async function defendPhase(
   defender.hand.splice(cardIdx, 1);
   game.table_cards[tableIdx] = { attack: tableEntry.attack, defense: defendCard };
   await savePlayer(defender);
-  await saveGame(game);
+  {
+    const err = await saveGameAtomic(game);
+    if (err) return { ok: false, error: err };
+  }
   await saveAction({ player_id: telegramId, game_code: code, action_type: `defend:${cardKey(defendCard)}`, timestamp: now() });
 
   // Check if all attacks are defended and table is full or no new attacks coming
@@ -319,7 +341,10 @@ export async function defendPhase(
   const allAttackersPassed = game.attacker_ids.every(ai => game.passed_ids.includes(ai));
   if (allDefended && (allAttackersPassed || game.table_cards.length >= 6)) {
     game.round_over = true;
-    await saveGame(game);
+    {
+      const err = await saveGameAtomic(game);
+      if (err) return { ok: false, error: err };
+    }
   }
 
   return { ok: true, game, players };
@@ -353,7 +378,10 @@ export async function takeCards(
   game.table_cards = [];
   game.round_over = true;
   await savePlayer(defender);
-  await saveGame(game);
+  {
+    const err = await saveGameAtomic(game);
+    if (err) return { ok: false, error: err };
+  }
   await saveAction({ player_id: telegramId, game_code: code, action_type: "take", timestamp: now() });
 
   return { ok: true, game, players };
@@ -365,6 +393,7 @@ export async function takeCards(
  */
 export async function resolveRound(
   code: string,
+  telegramId?: number,
 ): Promise<{
   ok: boolean;
   error?: string;
@@ -377,6 +406,18 @@ export async function resolveRound(
   if (!game) return { ok: false, error: "Game not found." };
 
   const players = await getGamePlayers(code);
+
+  // Authorization: only the defender may resolve the round
+  if (telegramId !== undefined) {
+    const caller = players.find(p => p.telegram_id === telegramId);
+    if (!caller) return { ok: false, error: "You're not in this game." };
+    if (game.status === "playing" && !game.round_over) {
+      return { ok: false, error: "The round isn't over yet." };
+    }
+    if (game.status === "playing" && caller.seat_index !== game.current_defender_index) {
+      return { ok: false, error: "Only the defender can resolve the round." };
+    }
+  }
 
   // Move table cards to discard
   for (const tc of game.table_cards) {
@@ -453,13 +494,28 @@ export async function resolveRound(
     game.attacker_ids = [game.current_attacker_index];
   }
 
-  await saveGame(game);
+  {
+    const err = await saveGameAtomic(game);
+    if (err) return { ok: false, error: err, game, players, finished, standings };
+  }
   return { ok: true, game, players, finished, standings };
 }
 
 /**
- * Player leaves an active game or lobby.
+ * Helper: save game with optimistic concurrency. Returns an error string on
+ * version conflict, or null on success.
  */
+async function saveGameAtomic(game: Game): Promise<string | null> {
+  try {
+    await saveGameWithVersion(game);
+    return null;
+  } catch (err) {
+    if (err instanceof ConcurrentModificationError) {
+      return "The game state changed before your action could be processed. Please try again.";
+    }
+    throw err;
+  }
+}
 export async function leaveGame(
   telegramId: number,
 ): Promise<{ ok: boolean; error?: string; game?: Game; message?: string }> {
@@ -474,7 +530,10 @@ export async function leaveGame(
     const remaining = await getGamePlayers(player.game_code);
     const count = remaining.length;
     game.player_count = count;
-    await saveGame(game);
+    {
+      const err = await saveGameAtomic(game);
+      if (err) return { ok: false, error: err };
+    }
 
     if (count === 0) {
       await deleteGame(player.game_code);
@@ -494,13 +553,19 @@ export async function leaveGame(
     game.discard.push(...player.hand);
     player.hand = [];
     await savePlayer(player);
-    await saveGame(game);
+    {
+      const err = await saveGameAtomic(game);
+      if (err) return { ok: false, error: err };
+    }
 
     const allPlayers = await getGamePlayers(player.game_code);
     const activePlayers = allPlayers.filter(p => p.status === "playing");
     if (activePlayers.length <= 1) {
       game.status = "finished";
-      await saveGame(game);
+      {
+        const err = await saveGameAtomic(game);
+        if (err) return { ok: false, error: err };
+      }
       if (activePlayers.length === 1) {
         activePlayers[0].status = "finished";
         await savePlayer(activePlayers[0]);
@@ -511,7 +576,7 @@ export async function leaveGame(
       };
     }
 
-    return { ok: true, message: "You left. Your cards were returned to the deck." };
+    return { ok: true, message: "You left. Your cards were placed in the discard pile." };
   }
 
   return { ok: false, error: "That game has already finished." };

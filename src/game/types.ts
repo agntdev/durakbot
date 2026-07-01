@@ -44,6 +44,8 @@ export interface Game {
   /** When true, the round is over and draw phase begins. */
   round_over: boolean;
   created_at: number;
+  /** Optimistic concurrency version — incremented on every save. */
+  version: number;
 }
 
 export type PlayerStatus = "playing" | "finished" | "left";

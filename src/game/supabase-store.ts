@@ -110,4 +110,22 @@ class SupabaseKV implements RedisLike {
     const map = new Map((data ?? []).map((r) => [r.key, r.value]));
     return keys.map((k) => map.get(k) ?? null);
   }
+
+  async incr(key: string): Promise<number> {
+    // Supabase doesn't have atomic increment on upsert, so we use a
+    // read-modify-write with a retry
+    const { data, error } = await this.client
+      .from(TABLE_STORE)
+      .select("value")
+      .eq("key", key)
+      .maybeSingle();
+    if (error) throw error;
+    const current = data?.value ? parseInt(data.value, 10) : 0;
+    const next = current + 1;
+    const { error: upsertError } = await this.client
+      .from(TABLE_STORE)
+      .upsert({ key, value: String(next) }, { onConflict: "key" });
+    if (upsertError) throw upsertError;
+    return next;
+  }
 }

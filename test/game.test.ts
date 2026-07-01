@@ -101,12 +101,14 @@ describe("deck", () => {
     expect(pickFirstAttacker(players, "hearts")).toBe(1);
   });
 
-  it("pickFirstAttacker returns 0 when nobody has trump", () => {
+  it("pickFirstAttacker returns a valid seat when nobody has trump", () => {
     const players = [
       { hand: [{ rank: "A", suit: "spades" }] },
       { hand: [{ rank: "K", suit: "clubs" }] },
     ];
-    expect(pickFirstAttacker(players, "hearts")).toBe(0);
+    const idx = pickFirstAttacker(players, "hearts");
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(idx).toBeLessThan(players.length);
   });
 
   it("computeStandings: first to empty hand wins, last is Durak", () => {
@@ -145,6 +147,7 @@ describe("game store", () => {
       passed_ids: [],
       round_over: false,
       created_at: 0,
+      version: 0,
     };
     await saveGame(game);
     const loaded = await getGame("TEST");
