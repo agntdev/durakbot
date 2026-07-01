@@ -15,6 +15,8 @@ export interface RedisLike {
   smembers(key: string): Promise<string[]>;
   scard(key: string): Promise<unknown>;
   mget(...keys: string[]): Promise<(string | null)[]>;
+  /** Increment the integer value at a key. Returns the new value. */
+  incr(key: string): Promise<number>;
 }
 
 /** In-memory Map fallback implementing the Redis-like interface. */
@@ -54,6 +56,12 @@ class InMemoryRedis implements RedisLike {
   }
   async mget(...keys: string[]): Promise<(string | null)[]> {
     return keys.map(k => this.store.get(k) ?? null);
+  }
+  async incr(key: string): Promise<number> {
+    const raw = this.store.get(key) ?? "0";
+    const next = parseInt(raw, 10) + 1;
+    this.store.set(key, String(next));
+    return next;
   }
 }
 
@@ -109,6 +117,7 @@ export function setGameStoreClient(client: RedisLike): void {
 
 // --- Key helpers ---
 const GAME_KEY = (code: string) => `durak:game:${code}`;
+const GAME_VERSION_KEY = (code: string) => `durak:game:v:${code}`;
 const PLAYER_KEY = (telegramId: number) => `durak:player:${telegramId}`;
 const GAME_PLAYERS_SET = (code: string) => `durak:game_players:${code}`;
 const GAME_ACTIONS_LIST = (code: string) => `durak:actions:${code}`;
@@ -122,6 +131,52 @@ export async function saveGame(game: Game): Promise<void> {
   await client.set(GAME_KEY(game.game_code), JSON.stringify(game));
   if (game.status === "lobby" || game.status === "playing") {
     await client.sadd(ACTIVE_GAMES_SET, game.game_code);
+  }
+}
+
+/**
+ * Save game with optimistic concurrency control. Reads the current version from a
+ * separate version key, checks it matches `game.version`, then atomically sets both
+ * the game data and the incremented version (INCR is atomic). Throws if the version
+ * doesn't match — i.e. another mutation raced in first.
+ *
+ * Call this from ALL engine mutation functions instead of saveGame() to prevent
+ * TOCTOU race conditions on game state.
+ */
+export async function saveGameWithVersion(game: Game): Promise<void> {
+  const client = getClient();
+
+  const versionKey = GAME_VERSION_KEY(game.game_code);
+  const expectedVersion = game.version;
+
+  // Read the current version from the store (not from memory)
+  const currentRaw = await client.get(versionKey);
+  const currentVersion = currentRaw ? parseInt(currentRaw, 10) : 0;
+
+  if (currentVersion !== expectedVersion) {
+    throw new ConcurrentModificationError(
+      `Game ${game.game_code} was modified by another request (expected v${expectedVersion}, got v${currentVersion})`,
+    );
+  }
+
+  // Atomically increment the version AND write game data.
+  // incr is atomic — the version moves forward;
+  // we set the game data immediately after.
+  game.version = expectedVersion + 1;
+  await Promise.all([
+    client.set(GAME_KEY(game.game_code), JSON.stringify(game)),
+    client.incr(versionKey),
+  ]);
+
+  if (game.status === "lobby" || game.status === "playing") {
+    await client.sadd(ACTIVE_GAMES_SET, game.game_code);
+  }
+}
+
+export class ConcurrentModificationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConcurrentModificationError";
   }
 }
 

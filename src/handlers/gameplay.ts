@@ -242,7 +242,7 @@ composer.callbackQuery(/^game:resolve:(.+)$/, async (ctx) => {
   const code = ctx.match![1];
   const { resolveRound } = await import("../game/engine.js");
 
-  const result = await resolveRound(code);
+  const result = await resolveRound(code, ctx.from!.id);
 
   if (!result.ok) {
     await ctx.answerCallbackQuery({ text: result.error ?? "Couldn't resolve round.", show_alert: true });

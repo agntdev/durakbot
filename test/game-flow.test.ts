@@ -34,6 +34,7 @@ function makeGame(overrides: Partial<Game> = {}): Game {
     passed_ids: [],
     round_over: false,
     created_at: 1000000,
+    version: 0,
     ...overrides,
   };
 }

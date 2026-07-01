@@ -3,6 +3,7 @@
  */
 import type { Card, Rank, Suit } from "./types.js";
 import { RANKS, SUITS } from "./types.js";
+import { now } from "./clock.js";
 
 /** Create a fresh 36-card deck (ranks 6–A, 4 suits). */
 export function createDeck(): Card[] {
@@ -25,7 +26,7 @@ export function shuffleDeck(deck: Card[], seed: number): Card[] {
   let s = seed;
   for (let i = cards.length - 1; i > 0; i--) {
     s = (s * 1664525 + 1013904223) & 0xffffffff;
-    const j = s >>> 0 % (i + 1);
+    const j = (s >>> 0) % (i + 1);
     [cards[i], cards[j]] = [cards[j], cards[i]];
   }
   return cards;
@@ -59,7 +60,7 @@ export function pickFirstAttacker(players: { hand: Card[] }[], trump: Suit): num
       }
     }
   }
-  return bestIdx >= 0 ? bestIdx : 0;
+  return bestIdx >= 0 ? bestIdx : Math.floor(Math.random() * players.length);
 }
 
 /** Check if a card can beat an attack card given the trump suit. */
@@ -106,9 +107,10 @@ export function drawFromDeck(
   while (newHand.length < 6 && remainingDeck.length > 0) {
     newHand.push(remainingDeck.pop()!);
   }
-  // If deck runs out, reshuffle discard
+  // If deck runs out, reshuffle discard (Fisher-Yates) and use as new deck
   while (newHand.length < 6 && remainingDiscard.length > 0) {
-    remainingDeck.push(...remainingDiscard.reverse());
+    // Seed from the testable clock for reproducibility in tests
+    remainingDeck.push(...shuffleDeck(remainingDiscard, (now() * 16807) % 2147483647));
     remainingDiscard.length = 0;
     while (newHand.length < 6 && remainingDeck.length > 0) {
       newHand.push(remainingDeck.pop()!);
