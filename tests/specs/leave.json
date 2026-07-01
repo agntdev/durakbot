@@ -1,6 +1,6 @@
 [
   {
-    "name": "/leave when not in a game",
+    "name": "/leave when not in a game shows error",
     "steps": [
       {
         "send": { "text": "/leave", "chatId": 1, "userId": 700 },
@@ -9,6 +9,18 @@
             "method": "sendMessage",
             "payload": { "text": "You're not in any game." }
           }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "game:leave callback when not in a game",
+    "steps": [
+      {
+        "send": { "callback": "game:leave", "userId": 700 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage", "payload": { "text": "You're not in any game." } }
         ]
       }
     ]

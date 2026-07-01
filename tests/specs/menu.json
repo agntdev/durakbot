@@ -1,0 +1,62 @@
+[
+  {
+    "name": "menu:newgame redirects to /newgame flow",
+    "steps": [
+      {
+        "send": { "callback": "menu:newgame", "userId": 100 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "menu:join shows join instructions",
+    "steps": [
+      {
+        "send": { "callback": "menu:join", "messageId": 100, "userId": 200 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "editMessageText" }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "menu:hand when not in a game",
+    "steps": [
+      {
+        "send": { "callback": "menu:hand", "messageId": 100, "userId": 100 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "menu:table when not in a game",
+    "steps": [
+      {
+        "send": { "callback": "menu:table", "messageId": 100, "userId": 200 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "menu:players when not in a game",
+    "steps": [
+      {
+        "send": { "callback": "menu:players", "messageId": 100, "userId": 300 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      }
+    ]
+  }
+]

@@ -91,6 +91,9 @@ async function showTable(ctx: Ctx) {
     buttons.push([inlineButton("▶️ Start game", `lobby:begin:${game.game_code}`)]);
   }
   buttons.push([inlineButton("🖐 My hand", "menu:hand")]);
+  if (game.status !== "finished") {
+    buttons.push([inlineButton("🚪 Leave game", "game:leave")]);
+  }
   buttons.push([inlineButton("⬅️ Back to menu", "menu:main")]);
 
   await ctx.reply(tableLines.join("\n"), { reply_markup: inlineKeyboard(buttons) });

@@ -62,21 +62,38 @@ let _client: RedisLike | null = null;
 function getClient(): RedisLike {
   if (_client) return _client;
 
-  const url = process.env.REDIS_URL;
-  if (!url) {
-    _client = new InMemoryRedis();
+  // Priority 1: REDIS_URL — existing Redis production setups
+  const redisUrl = process.env.REDIS_URL;
+  if (redisUrl) {
+    try {
+      const require = createRequire(import.meta.url);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ioredis: any = require("ioredis");
+      const Redis = ioredis.default ?? ioredis.Redis ?? ioredis;
+      _client = new Redis(redisUrl, { maxRetriesPerRequest: null, lazyConnect: false }) as RedisLike;
+    } catch {
+      _client = new InMemoryRedis();
+    }
     return _client;
   }
 
-  try {
-    const require = createRequire(import.meta.url);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ioredis: any = require("ioredis");
-    const Redis = ioredis.default ?? ioredis.Redis ?? ioredis;
-    _client = new Redis(url, { maxRetriesPerRequest: null, lazyConnect: false }) as RedisLike;
-  } catch {
-    _client = new InMemoryRedis();
+  // Priority 2: SUPABASE_URL + SUPABASE_KEY — Supabase (spec requirement)
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_KEY;
+  if (supabaseUrl && supabaseKey) {
+    try {
+      const { createSupabaseClient } = require("./supabase-store.js") as {
+        createSupabaseClient: (url: string, key: string) => RedisLike;
+      };
+      _client = createSupabaseClient(supabaseUrl, supabaseKey);
+    } catch {
+      _client = new InMemoryRedis();
+    }
+    return _client;
   }
+
+  // Priority 3: in-memory fallback (dev / testing)
+  _client = new InMemoryRedis();
   return _client;
 }
 

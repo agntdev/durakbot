@@ -12,8 +12,6 @@ const composer = new Composer<Ctx>();
 // Also handle the menu:newgame callback from the /start main menu
 composer.callbackQuery("menu:newgame", async (ctx) => {
   await ctx.answerCallbackQuery();
-  // Re-use the command path
-  ctx.message = undefined as any;
   await handleNewGame(ctx);
 });
 
