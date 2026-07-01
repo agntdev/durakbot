@@ -7,8 +7,20 @@
         "expect": [
           {
             "method": "sendMessage",
-            "payload": { "text": "👋 Welcome! Tap a button below to get started." }
+            "payload": { "text": "🃏 Welcome to Durak!\n\nA classic Russian card game for 2–6 players. Create or join a game, then battle it out — last player with cards is the Durak.\n\nTap a button below to get started." }
           }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "menu:main back button re-renders main menu",
+    "steps": [
+      {
+        "send": { "callback": "menu:main", "messageId": 100 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "editMessageText" }
         ]
       }
     ]

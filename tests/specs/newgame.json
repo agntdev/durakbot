@@ -1,0 +1,13 @@
+[
+  {
+    "name": "/newgame creates a lobby",
+    "steps": [
+      {
+        "send": { "text": "/newgame", "chatId": 1, "userId": 100 },
+        "expect": [
+          { "method": "sendMessage" }
+        ]
+      }
+    ]
+  }
+]

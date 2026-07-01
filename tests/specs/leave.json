@@ -1,0 +1,16 @@
+[
+  {
+    "name": "/leave when not in a game",
+    "steps": [
+      {
+        "send": { "text": "/leave", "chatId": 1, "userId": 700 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": { "text": "You're not in any game." }
+          }
+        ]
+      }
+    ]
+  }
+]
