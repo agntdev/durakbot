@@ -1,0 +1,13 @@
+[
+  {
+    "name": "noop callback is answered silently",
+    "steps": [
+      {
+        "send": { "callback": "noop", "userId": 100 },
+        "expect": [
+          { "method": "answerCallbackQuery" }
+        ]
+      }
+    ]
+  }
+]
