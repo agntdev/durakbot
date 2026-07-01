@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { createDeck, shuffleDeck, trumpSuitFromDeck, pickFirstAttacker, canBeat, isValidAttackRank, isPlayableAttack, drawFromDeck, computeStandings } from "../src/game/deck.js";
-import { resetGameStoreClient, saveGame, getGame, savePlayer, getPlayer, getGamePlayers, getGamePlayerCount, getPlayerGameCode } from "../src/game/store.js";
+import { resetGameStoreClient, saveGame, getGame, savePlayer, getPlayer, getGamePlayers, getGamePlayerCount, getPlayerGameCode, saveAction, getGameActions } from "../src/game/store.js";
 import type { Card, Game, Player } from "../src/game/types.js";
 
 describe("deck", () => {
@@ -98,17 +98,16 @@ describe("deck", () => {
       { hand: [{ rank: "A", suit: "hearts" }] },
       { hand: [{ rank: "6", suit: "hearts" }] },
     ];
-    expect(pickFirstAttacker(players, "hearts")).toBe(1);
+    expect(pickFirstAttacker(players, "hearts", 42)).toBe(1);
   });
 
-  it("pickFirstAttacker returns a valid seat when nobody has trump", () => {
+  it("pickFirstAttacker returns a deterministic seat when nobody has trump", () => {
     const players = [
       { hand: [{ rank: "A", suit: "spades" }] },
       { hand: [{ rank: "K", suit: "clubs" }] },
     ];
-    const idx = pickFirstAttacker(players, "hearts");
-    expect(idx).toBeGreaterThanOrEqual(0);
-    expect(idx).toBeLessThan(players.length);
+    // With seed 42, the LCG produces seat 1 deterministically
+    expect(pickFirstAttacker(players, "hearts", 42)).toBe(1);
   });
 
   it("computeStandings: first to empty hand wins, last is Durak", () => {
@@ -185,5 +184,15 @@ describe("game store", () => {
     await savePlayer({ telegram_id: 5, game_code: "ABCD", seat_index: 0, hand: [], status: "playing", joined_at: 0 });
     const code = await getPlayerGameCode(5);
     expect(code).toBe("ABCD");
+  });
+
+  it("saves and retrieves game actions", async () => {
+    const action = { player_id: 7, game_code: "ACTN", action_type: "join", timestamp: 100 };
+    await savePlayer({ telegram_id: 7, game_code: "ACTN", seat_index: 0, hand: [], status: "playing", joined_at: 0 });
+    await saveAction(action);
+    const actions = await getGameActions("ACTN");
+    expect(actions).toHaveLength(1);
+    expect(actions[0].action_type).toBe("join");
+    expect(actions[0].player_id).toBe(7);
   });
 });

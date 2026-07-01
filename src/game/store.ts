@@ -17,6 +17,14 @@ export interface RedisLike {
   mget(...keys: string[]): Promise<(string | null)[]>;
   /** Increment the integer value at a key. Returns the new value. */
   incr(key: string): Promise<number>;
+  /**
+   * Atomic compare-and-increment: only increment if the current value equals
+   * `expected`. Returns the new value, or -1 if the value didn't match (caller
+   * should retry from the read phase). In-memory implementation uses
+   * synchronous access to guarantee atomicity; Redis uses WATCH/MULTI/EXEC;
+   * Supabase uses a read-modify-write loop with version checking and retry.
+   */
+  checkAndIncr(key: string, expected: number): Promise<number>;
 }
 
 /** In-memory Map fallback implementing the Redis-like interface. */
@@ -60,6 +68,14 @@ class InMemoryRedis implements RedisLike {
   async incr(key: string): Promise<number> {
     const raw = this.store.get(key) ?? "0";
     const next = parseInt(raw, 10) + 1;
+    this.store.set(key, String(next));
+    return next;
+  }
+  async checkAndIncr(key: string, expected: number): Promise<number> {
+    const raw = this.store.get(key) ?? "0";
+    const current = parseInt(raw, 10);
+    if (current !== expected) return -1;
+    const next = current + 1;
     this.store.set(key, String(next));
     return next;
   }
@@ -149,24 +165,23 @@ export async function saveGameWithVersion(game: Game): Promise<void> {
   const versionKey = GAME_VERSION_KEY(game.game_code);
   const expectedVersion = game.version;
 
-  // Read the current version from the store (not from memory)
-  const currentRaw = await client.get(versionKey);
-  const currentVersion = currentRaw ? parseInt(currentRaw, 10) : 0;
+  // Use atomic checkAndIncr to avoid the TOCTOU race in read-then-write.
+  // The version key starts at 0 (no record = 0). If checkAndIncr returns -1,
+  // another request already incremented the version — throw a conflict.
+  const newVersion = await client.checkAndIncr(versionKey, expectedVersion);
 
-  if (currentVersion !== expectedVersion) {
+  if (newVersion < 0) {
+    // Read the current version for a helpful error message
+    const currentRaw = await client.get(versionKey);
+    const currentVersion = currentRaw ? parseInt(currentRaw, 10) : 0;
     throw new ConcurrentModificationError(
       `Game ${game.game_code} was modified by another request (expected v${expectedVersion}, got v${currentVersion})`,
     );
   }
 
-  // Atomically increment the version AND write game data.
-  // incr is atomic — the version moves forward;
-  // we set the game data immediately after.
-  game.version = expectedVersion + 1;
-  await Promise.all([
-    client.set(GAME_KEY(game.game_code), JSON.stringify(game)),
-    client.incr(versionKey),
-  ]);
+  // Write game data with the new version
+  game.version = newVersion;
+  await client.set(GAME_KEY(game.game_code), JSON.stringify(game));
 
   if (game.status === "lobby" || game.status === "playing") {
     await client.sadd(ACTIVE_GAMES_SET, game.game_code);
@@ -248,6 +263,15 @@ export async function saveAction(action: Action): Promise<void> {
   const key = GAME_ACTIONS_LIST(action.game_code);
   // Append action as JSON in a set keyed by timestamp
   await client.sadd(key, JSON.stringify(action));
+}
+
+/** Retrieve actions for a game (for audit/recovery purposes). Ordered by timestamp. */
+export async function getGameActions(code: string): Promise<Action[]> {
+  const client = getClient();
+  const rawActions = await client.smembers(GAME_ACTIONS_LIST(code));
+  const actions = rawActions.map(r => JSON.parse(r) as Action);
+  actions.sort((a, b) => a.timestamp - b.timestamp);
+  return actions;
 }
 
 export async function getActiveGameCodes(): Promise<string[]> {

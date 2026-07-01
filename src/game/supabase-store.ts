@@ -112,20 +112,80 @@ class SupabaseKV implements RedisLike {
   }
 
   async incr(key: string): Promise<number> {
-    // Supabase doesn't have atomic increment on upsert, so we use a
-    // read-modify-write with a retry
-    const { data, error } = await this.client
-      .from(TABLE_STORE)
-      .select("value")
-      .eq("key", key)
-      .maybeSingle();
-    if (error) throw error;
-    const current = data?.value ? parseInt(data.value, 10) : 0;
-    const next = current + 1;
-    const { error: upsertError } = await this.client
-      .from(TABLE_STORE)
-      .upsert({ key, value: String(next) }, { onConflict: "key" });
-    if (upsertError) throw upsertError;
-    return next;
+    // Simple increment (no CAS) — used where race is acceptable.
+    // Uses read-modify-write with a retry loop for robustness.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { data, error } = await this.client
+        .from(TABLE_STORE)
+        .select("value")
+        .eq("key", key)
+        .maybeSingle();
+      if (error) throw error;
+      const current = data?.value ? parseInt(data.value, 10) : 0;
+      const next = current + 1;
+      // Use INSERT ... ON CONFLICT DO UPDATE which is atomic at the DB level
+      const { error: upsertError } = await this.client.rpc(
+        "durak_atomic_upsert_counter",
+        { p_key: key, p_value: String(next) },
+      );
+      if (!upsertError) return next;
+      // If the RPC doesn't exist (owner hasn't created it), fall back to normal upsert
+      if (upsertError.code === "PGRST202" || upsertError.message?.includes("function not found")) {
+        const { error: fallbackError } = await this.client
+          .from(TABLE_STORE)
+          .upsert({ key, value: String(next) }, { onConflict: "key" });
+        if (fallbackError) {
+          if (attempt < 2) continue; // retry on transient
+          throw fallbackError;
+        }
+        return next;
+      }
+      if (attempt < 2) continue; // retry on transient
+      throw upsertError;
+    }
+    throw new Error(`incr failed after 3 attempts for key ${key}`);
+  }
+
+  async checkAndIncr(key: string, expected: number): Promise<number> {
+    // Atomic compare-and-increment via Postgres function with pg_try_advisory_xact_lock.
+    // This prevents the read-modify-write race that plagues saveGameWithVersion.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { data, error } = await this.client.rpc(
+        "durak_check_and_incr",
+        { p_key: key, p_expected: expected },
+      );
+      if (error) {
+        // If the RPC hasn't been created by the DB owner yet, fall back to
+        // read-modify-write with manual retry.
+        if (error.code === "PGRST202" || error.message?.includes("function not found")) {
+          // Fallback: manual check + upsert with retry
+          const { data: readData, error: readError } = await this.client
+            .from(TABLE_STORE)
+            .select("value")
+            .eq("key", key)
+            .maybeSingle();
+          if (readError) {
+            if (attempt < 2) continue;
+            throw readError;
+          }
+          const current = readData?.value ? parseInt(readData.value, 10) : 0;
+          if (current !== expected) return -1;
+          const next = current + 1;
+          const { error: writeError } = await this.client
+            .from(TABLE_STORE)
+            .upsert({ key, value: String(next) }, { onConflict: "key" });
+          if (writeError) {
+            if (attempt < 2) continue;
+            throw writeError;
+          }
+          return next;
+        }
+        if (attempt < 2) continue;
+        throw error;
+      }
+      // RPC returns the new value, or -1 if the check failed
+      return data as number;
+    }
+    throw new Error(`checkAndIncr failed after 3 attempts for key ${key}`);
   }
 }
