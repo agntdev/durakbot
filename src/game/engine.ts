@@ -28,12 +28,14 @@ import {
 import { now } from "./clock.js";
 import { cardKey } from "./types.js";
 
-/** Generate a 4-character alphanumeric game code. */
-export function generateGameCode(): string {
+/** Generate a 4-character alphanumeric game code using a crypto-quality seed. */
+export function generateGameCode(seed?: number): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let s = seed ?? cryptoSeed();
   let code = "";
   for (let i = 0; i < 4; i++) {
-    code += chars[Math.floor(Math.random() * chars.length)];
+    s = (s * 1664525 + 1013904223) & 0xffffffff;
+    code += chars[(s >>> 0) % chars.length];
   }
   return code;
 }
