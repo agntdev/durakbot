@@ -9,6 +9,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.109.0",
     "grammy": "^1.30.0",
     "ioredis": "^5.4.1"
   },

@@ -28,16 +28,6 @@ import {
 import { now } from "./clock.js";
 import { cardKey } from "./types.js";
 
-/** Generate a 4-character alphanumeric game code. */
-export function generateGameCode(): string {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = "";
-  for (let i = 0; i < 4; i++) {
-    code += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return code;
-}
-
 function cryptoSeed(): number {
   try {
     const buf = new Uint32Array(1);
@@ -46,6 +36,19 @@ function cryptoSeed(): number {
   } catch {
     return (now() * 16807) % 2147483647;
   }
+}
+
+/** Generate a 4-character alphanumeric game code from a crypto-quality seed. */
+export function generateGameCode(seed?: number): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const seedValue = seed ?? cryptoSeed();
+  let s = seedValue;
+  let code = "";
+  for (let i = 0; i < 4; i++) {
+    s = (s * 1664525 + 1013904223) & 0xffffffff;
+    code += chars[(s >>> 0) % chars.length];
+  }
+  return code;
 }
 
 /** Create a new lobby game. Host joins as first player. */

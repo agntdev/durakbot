@@ -1,0 +1,139 @@
+[
+  {
+    "name": "join with short code is rejected",
+    "steps": [
+      {
+        "send": { "text": "/join AB", "chatId": 1, "userId": 999 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": { "text": "Game codes are 4 letters and numbers. Check the code and try again." }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "join with missing code shows help",
+    "steps": [
+      {
+        "send": { "text": "/join", "chatId": 1, "userId": 999 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": { "text": "Send the 4-letter game code to join, like:\n/join ABCD" }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "join with non-existent code",
+    "steps": [
+      {
+        "send": { "text": "/join XXXX", "chatId": 1, "userId": 999 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": { "text": "Game not found — check the code and try again." }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "menu:join callback shows code prompt",
+    "steps": [
+      {
+        "send": { "callback": "menu:join", "messageId": 100, "chatId": 1, "userId": 300 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "editMessageText" }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "menu:hand shows not-in-game when not playing",
+    "steps": [
+      {
+        "send": { "callback": "menu:hand", "messageId": 100, "chatId": 1, "userId": 888 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          {
+            "method": "sendMessage",
+            "payload": { "text": "You're not in a game. Create or join one first." }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "menu:table shows not-in-game when not playing",
+    "steps": [
+      {
+        "send": { "callback": "menu:table", "messageId": 100, "chatId": 1, "userId": 888 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          {
+            "method": "sendMessage",
+            "payload": { "text": "You're not in a game. Create or join one first." }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "menu:players shows not-in-game when not playing",
+    "steps": [
+      {
+        "send": { "callback": "menu:players", "messageId": 100, "chatId": 1, "userId": 888 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          {
+            "method": "sendMessage",
+            "payload": { "text": "You're not in a game. Create or join one first." }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "game:leave via callback when not in a game",
+    "steps": [
+      {
+        "send": { "callback": "game:leave", "messageId": 100, "chatId": 1, "userId": 777 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          {
+            "method": "sendMessage",
+            "payload": { "text": "You're not in any game." }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "menu:newgame creates a lobby from button",
+    "steps": [
+      {
+        "send": { "callback": "menu:newgame", "messageId": 100, "chatId": 10, "userId": 6001 },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "sendMessage" }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "/newgame creates a lobby and shows game code",
+    "steps": [
+      {
+        "send": { "text": "/newgame", "chatId": 700, "userId": 7000 },
+        "expect": [
+          { "method": "sendMessage" }
+        ]
+      }
+    ]
+  }
+]
