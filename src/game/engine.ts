@@ -265,13 +265,6 @@ export async function passAttack(
   await saveGame(game);
   await saveAction({ player_id: telegramId, game_code: code, action_type: "pass", timestamp: now() });
 
-  // Check if all attackers have passed
-  const allPassed = game.attacker_ids.every(ai => game.passed_ids.includes(ai));
-  if (allPassed && game.table_cards.length > 0) {
-    game.round_over = true;
-    await saveGame(game);
-  }
-
   return { ok: true, game, players };
 }
 

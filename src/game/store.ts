@@ -2,9 +2,12 @@
  * Persistent game store — Redis-backed durable storage for game state, player
  * hands, and action audit log. Uses explicit index keys (never KEYS/SCAN).
  * Falls back to in-memory Map when REDIS_URL is not set (dev/testing).
+ *
+ * When SUPABASE_URL + SUPABASE_KEY are set, Supabase is used instead.
+ * The ESM-only @supabase/supabase-js is loaded via dynamic import().
  */
 import { createRequire } from "node:module";
-import type { Game, Player, Action, TableCard, Card } from "./types.js";
+import type { Game, Player, Action } from "./types.js";
 
 export interface RedisLike {
   get(key: string): Promise<string | null>;
@@ -58,9 +61,26 @@ class InMemoryRedis implements RedisLike {
 }
 
 let _client: RedisLike | null = null;
+let _clientPromise: Promise<RedisLike> | null = null;
 
-function getClient(): RedisLike {
+const _storeRequire = createRequire(import.meta.url);
+
+async function getClient(): Promise<RedisLike> {
   if (_client) return _client;
+  if (_clientPromise) return _clientPromise;
+
+  // Supabase takes priority when configured.
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_KEY;
+  if (supabaseUrl && supabaseKey) {
+    _clientPromise = (async () => {
+      const { SupabaseStorage } = await import("./supabase-store.js");
+      const instance = new SupabaseStorage();
+      _client = instance;
+      return instance;
+    })();
+    return _clientPromise;
+  }
 
   const url = process.env.REDIS_URL;
   if (!url) {
@@ -69,11 +89,9 @@ function getClient(): RedisLike {
   }
 
   try {
-    const require = createRequire(import.meta.url);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ioredis: any = require("ioredis");
+    const ioredis: any = _storeRequire("ioredis");
     const Redis = ioredis.default ?? ioredis.Redis ?? ioredis;
-    _client = new Redis(url, { maxRetriesPerRequest: null, lazyConnect: false }) as RedisLike;
+    _client = new Redis(url, { maxRetriesPerRequest: null, lazyConnect: false }) as unknown as RedisLike;
   } catch {
     _client = new InMemoryRedis();
   }
@@ -83,11 +101,13 @@ function getClient(): RedisLike {
 /** Reset the client (test-only). */
 export function resetGameStoreClient(): void {
   _client = null;
+  _clientPromise = null;
 }
 
 /** Override the client (test-only). */
 export function setGameStoreClient(client: RedisLike): void {
   _client = client;
+  _clientPromise = null;
 }
 
 // --- Key helpers ---
@@ -101,7 +121,7 @@ const ACTIVE_GAMES_SET = "durak:active_games";
 // --- Game Store API ---
 
 export async function saveGame(game: Game): Promise<void> {
-  const client = getClient();
+  const client = await getClient();
   await client.set(GAME_KEY(game.game_code), JSON.stringify(game));
   if (game.status === "lobby" || game.status === "playing") {
     await client.sadd(ACTIVE_GAMES_SET, game.game_code);
@@ -109,39 +129,39 @@ export async function saveGame(game: Game): Promise<void> {
 }
 
 export async function getGame(code: string): Promise<Game | null> {
-  const client = getClient();
+  const client = await getClient();
   const raw = await client.get(GAME_KEY(code));
   if (!raw) return null;
   return JSON.parse(raw) as Game;
 }
 
 export async function deleteGame(code: string): Promise<void> {
-  const client = getClient();
+  const client = await getClient();
   await client.del(GAME_KEY(code));
   await client.srem(ACTIVE_GAMES_SET, code);
 }
 
 export async function savePlayer(player: Player): Promise<void> {
-  const client = getClient();
+  const client = await getClient();
   await client.set(PLAYER_KEY(player.telegram_id), JSON.stringify(player));
   await client.set(PLAYER_GAME_KEY(player.telegram_id), player.game_code);
   await client.sadd(GAME_PLAYERS_SET(player.game_code), String(player.telegram_id));
 }
 
 export async function getPlayer(telegramId: number): Promise<Player | null> {
-  const client = getClient();
+  const client = await getClient();
   const raw = await client.get(PLAYER_KEY(telegramId));
   if (!raw) return null;
   return JSON.parse(raw) as Player;
 }
 
 export async function getPlayerGameCode(telegramId: number): Promise<string | null> {
-  const client = getClient();
+  const client = await getClient();
   return await client.get(PLAYER_GAME_KEY(telegramId));
 }
 
 export async function getGamePlayers(code: string): Promise<Player[]> {
-  const client = getClient();
+  const client = await getClient();
   const ids = await client.smembers(GAME_PLAYERS_SET(code));
   if (ids.length === 0) return [];
   const raws = await client.mget(...ids.map(id => PLAYER_KEY(Number(id))));
@@ -149,20 +169,20 @@ export async function getGamePlayers(code: string): Promise<Player[]> {
 }
 
 export async function getGamePlayerCount(code: string): Promise<number> {
-  const client = getClient();
+  const client = await getClient();
   const count = await client.scard(GAME_PLAYERS_SET(code));
   return Number(count);
 }
 
 export async function removePlayer(telegramId: number, gameCode: string): Promise<void> {
-  const client = getClient();
+  const client = await getClient();
   await client.srem(GAME_PLAYERS_SET(gameCode), String(telegramId));
   await client.del(PLAYER_GAME_KEY(telegramId));
   await client.del(PLAYER_KEY(telegramId));
 }
 
 export async function removeAllPlayers(gameCode: string): Promise<void> {
-  const client = getClient();
+  const client = await getClient();
   const ids = await client.smembers(GAME_PLAYERS_SET(gameCode));
   for (const id of ids) {
     await client.del(PLAYER_KEY(Number(id)));
@@ -172,13 +192,12 @@ export async function removeAllPlayers(gameCode: string): Promise<void> {
 }
 
 export async function saveAction(action: Action): Promise<void> {
-  const client = getClient();
+  const client = await getClient();
   const key = GAME_ACTIONS_LIST(action.game_code);
-  // Append action as JSON in a set keyed by timestamp
   await client.sadd(key, JSON.stringify(action));
 }
 
 export async function getActiveGameCodes(): Promise<string[]> {
-  const client = getClient();
+  const client = await getClient();
   return await client.smembers(ACTIVE_GAMES_SET);
 }
