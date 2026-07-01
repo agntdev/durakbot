@@ -1,81 +1,237 @@
 /**
- * Persistent game store — Redis-backed durable storage for game state, player
- * hands, and action audit log. Uses explicit index keys (never KEYS/SCAN).
- * Falls back to in-memory Map when REDIS_URL is not set (dev/testing).
+ * Persistent game store — Supabase-backed durable storage for game state, player
+ * hands, and action audit log. Uses explicit field queries (never list-all).
+ * Falls back to in-memory Map when SUPABASE_URL/SUPABASE_KEY is not set
+ * (dev/testing).
+ *
+ * Schema (create these tables in the Supabase SQL editor):
+ *
+ *   CREATE TABLE games (
+ *     game_code text PRIMARY KEY,
+ *     chat_id bigint NOT NULL,
+ *     status text NOT NULL DEFAULT 'lobby',
+ *     trump_suit text NOT NULL,
+ *     trump_card jsonb NOT NULL,
+ *     deck jsonb NOT NULL DEFAULT '[]'::jsonb,
+ *     discard jsonb NOT NULL DEFAULT '[]'::jsonb,
+ *     table_cards jsonb NOT NULL DEFAULT '[]'::jsonb,
+ *     current_attacker_index integer NOT NULL DEFAULT 0,
+ *     current_defender_index integer NOT NULL DEFAULT 0,
+ *     player_count integer NOT NULL DEFAULT 0,
+ *     attacker_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+ *     passed_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+ *     round_over boolean NOT NULL DEFAULT false,
+ *     created_at bigint NOT NULL
+ *   );
+ *
+ *   CREATE TABLE players (
+ *     telegram_id bigint PRIMARY KEY,
+ *     game_code text NOT NULL REFERENCES games(game_code),
+ *     seat_index integer NOT NULL,
+ *     hand jsonb NOT NULL DEFAULT '[]'::jsonb,
+ *     status text NOT NULL DEFAULT 'playing',
+ *     joined_at bigint NOT NULL
+ *   );
+ *   CREATE INDEX idx_players_game ON players(game_code, seat_index);
+ *
+ *   CREATE TABLE actions (
+ *     id bigserial PRIMARY KEY,
+ *     player_id bigint NOT NULL,
+ *     game_code text NOT NULL REFERENCES games(game_code),
+ *     action_type text NOT NULL,
+ *     timestamp bigint NOT NULL
+ *   );
+ *   CREATE INDEX idx_actions_game ON actions(game_code, timestamp);
  */
-import { createRequire } from "node:module";
-import type { Game, Player, Action, TableCard, Card } from "./types.js";
 
-export interface RedisLike {
-  get(key: string): Promise<string | null>;
-  set(key: string, value: string): Promise<unknown>;
-  del(key: string): Promise<unknown>;
-  sadd(key: string, ...members: string[]): Promise<unknown>;
-  srem(key: string, ...members: string[]): Promise<unknown>;
-  smembers(key: string): Promise<string[]>;
-  scard(key: string): Promise<unknown>;
-  mget(...keys: string[]): Promise<(string | null)[]>;
+import type { Game, Player, Action } from "./types.js";
+
+export interface SupabaseLike {
+  from(table: string): SupabaseQueryBuilder;
 }
 
-/** In-memory Map fallback implementing the Redis-like interface. */
-class InMemoryRedis implements RedisLike {
-  private store = new Map<string, string>();
-  private sets = new Map<string, Set<string>>();
+export interface SupabaseQueryBuilder {
+  select(columns?: string): SupabaseFilterBuilder;
+  upsert(rows: unknown | unknown[], opts?: { onConflict?: string }): Promise<{ error: unknown }>;
+  insert(rows: unknown | unknown[]): Promise<{ error: unknown }>;
+  delete(): { eq(field: string, value: unknown): Promise<{ error: unknown }> };
+  update(values: Record<string, unknown>): { eq(field: string, value: unknown): Promise<{ error: unknown }> };
+}
 
-  async get(key: string): Promise<string | null> {
-    return this.store.get(key) ?? null;
-  }
-  async set(key: string, value: string): Promise<string> {
-    this.store.set(key, value);
-    return "OK";
-  }
-  async del(key: string): Promise<number> {
-    return this.store.delete(key) ? 1 : 0;
-  }
-  async sadd(key: string, ...members: string[]): Promise<number> {
-    let set = this.sets.get(key);
-    if (!set) { set = new Set<string>(); this.sets.set(key, set); }
-    let added = 0;
-    for (const m of members) { if (!set.has(m)) { set.add(m); added++; } }
-    return added;
-  }
-  async srem(key: string, ...members: string[]): Promise<number> {
-    const set = this.sets.get(key);
-    if (!set) return 0;
-    let removed = 0;
-    for (const m of members) { if (set.delete(m)) removed++; }
-    return removed;
-  }
-  async smembers(key: string): Promise<string[]> {
-    return [...(this.sets.get(key) ?? new Set())];
-  }
-  async scard(key: string): Promise<number> {
-    return (this.sets.get(key) ?? new Set()).size;
-  }
-  async mget(...keys: string[]): Promise<(string | null)[]> {
-    return keys.map(k => this.store.get(k) ?? null);
+export interface SupabaseFilterBuilder {
+  eq(field: string, value: unknown): SupabaseFilterBuilder;
+  order(field: string, opts?: { ascending?: boolean }): SupabaseFilterBuilder;
+  limit(n: number): SupabaseFilterBuilder;
+  then<T>(resolve: (v: { data: unknown[] | null; error: unknown }) => T): Promise<T>;
+}
+
+class InMemorySupabase implements SupabaseLike {
+  private games = new Map<string, Game>();
+  private players = new Map<number, Player>();
+  private actions: Action[] = [];
+
+  from(table: string): SupabaseQueryBuilder {
+    const self = this;
+    return {
+      select(columns?: string): SupabaseFilterBuilder {
+        return new InMemoryFilterBuilder(self, table);
+      },
+      async upsert(rows: unknown | unknown[], opts?: { onConflict?: string }) {
+        const arr = Array.isArray(rows) ? rows : [rows];
+        for (const r of arr) {
+          if (table === "games") {
+            const g = r as Game;
+            self.games.set(g.game_code, { ...g });
+          } else if (table === "players") {
+            const p = r as Player;
+            self.players.set(p.telegram_id, { ...p });
+          }
+        }
+        return { error: null };
+      },
+      async insert(rows: unknown | unknown[]) {
+        const arr = Array.isArray(rows) ? rows : [rows];
+        for (const r of arr) {
+          if (table === "actions") {
+            self.actions.push({ ...(r as Action) });
+          }
+        }
+        return { error: null };
+      },
+      delete() {
+        return {
+          async eq(field: string, value: unknown) {
+            if (table === "games") { self.games.delete(String(value)); }
+            else if (table === "players") {
+              if (field === "game_code") {
+                for (const [k, p] of self.players) {
+                  if (p.game_code === value) self.players.delete(k);
+                }
+              } else if (field === "telegram_id") { self.players.delete(Number(value)); }
+            } else if (table === "actions") {
+              if (field === "game_code") {
+                self.actions = self.actions.filter(a => a.game_code !== value);
+              }
+            }
+            return { error: null };
+          },
+        };
+      },
+      update(values: Record<string, unknown>) {
+        return {
+          async eq(field: string, value: unknown) {
+            if (table === "games") {
+              const g = self.games.get(String(value));
+              if (g) Object.assign(g, values);
+            } else if (table === "players") {
+              const p = self.players.get(Number(value));
+              if (p) Object.assign(p, values);
+            }
+            return { error: null };
+          },
+        };
+      },
+    };
   }
 }
 
-let _client: RedisLike | null = null;
+class InMemoryFilterBuilder implements SupabaseFilterBuilder {
+  private table: string;
+  private store: InMemorySupabase;
+  private _eq: { field: string; value: unknown }[] = [];
+  private _orderField: string | null = null;
+  private _orderAsc = true;
+  private _limit: number | null = null;
 
-function getClient(): RedisLike {
+  constructor(store: InMemorySupabase, table: string) {
+    this.store = store;
+    this.table = table;
+  }
+
+  eq(field: string, value: unknown): SupabaseFilterBuilder {
+    this._eq.push({ field, value });
+    return this;
+  }
+
+  order(field: string, opts?: { ascending?: boolean }): SupabaseFilterBuilder {
+    this._orderField = field;
+    this._orderAsc = opts?.ascending ?? true;
+    return this;
+  }
+
+  limit(n: number): SupabaseFilterBuilder {
+    this._limit = n;
+    return this;
+  }
+
+  then<T>(resolve: (v: { data: unknown[] | null; error: unknown }) => T): Promise<T> {
+    const result = this.exec();
+    return Promise.resolve(result).then(resolve);
+  }
+
+  private exec(): { data: unknown[] | null; error: unknown } {
+    let rows: unknown[] = [];
+
+    if (this.table === "games") {
+      const games = [...this.store["games"].values()];
+      for (const eq of this._eq) {
+        rows = games.filter(g => ((g as unknown) as Record<string, unknown>)[eq.field] === eq.value).map(g => ({ ...g }));
+      }
+    } else if (this.table === "players") {
+      let players = [...this.store["players"].values()];
+      for (const eq of this._eq) {
+        players = players.filter(p => ((p as unknown) as Record<string, unknown>)[eq.field] === eq.value);
+      }
+      rows = players.map(p => ({ ...p }));
+    } else if (this.table === "actions") {
+      let acts = [...this.store["actions"]];
+      for (const eq of this._eq) {
+        acts = acts.filter(a => ((a as unknown) as Record<string, unknown>)[eq.field] === eq.value);
+      }
+      rows = acts.map(a => ({ ...(a as Action) }));
+    }
+
+    if (this._orderField) {
+      const field = this._orderField;
+      rows.sort((a, b) => {
+        const av = (a as Record<string, unknown>)[field] as number;
+        const bv = (b as Record<string, unknown>)[field] as number;
+        return this._orderAsc ? av - bv : bv - av;
+      });
+    }
+
+    if (this._limit !== null) {
+      rows = rows.slice(0, this._limit);
+    }
+
+    return { data: rows, error: null };
+  }
+}
+
+let _client: SupabaseLike | null = null;
+
+async function initClient(): Promise<SupabaseLike> {
   if (_client) return _client;
 
-  const url = process.env.REDIS_URL;
-  if (!url) {
-    _client = new InMemoryRedis();
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_KEY;
+
+  if (!url || !key) {
+    _client = new InMemorySupabase();
     return _client;
   }
 
   try {
+    const { createRequire } = await import("node:module");
     const require = createRequire(import.meta.url);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ioredis: any = require("ioredis");
-    const Redis = ioredis.default ?? ioredis.Redis ?? ioredis;
-    _client = new Redis(url, { maxRetriesPerRequest: null, lazyConnect: false }) as RedisLike;
-  } catch {
-    _client = new InMemoryRedis();
+    const supabaseModule: any = require("@supabase/supabase-js");
+    const createClient = supabaseModule.createClient ?? supabaseModule.default?.createClient;
+    if (!createClient) throw new Error("Could not resolve createClient from @supabase/supabase-js");
+    _client = createClient(url, key) as SupabaseLike;
+  } catch (err) {
+    console.warn("[game-store] Supabase client init failed, using in-memory fallback:", err);
+    _client = new InMemorySupabase();
   }
   return _client;
 }
@@ -86,99 +242,127 @@ export function resetGameStoreClient(): void {
 }
 
 /** Override the client (test-only). */
-export function setGameStoreClient(client: RedisLike): void {
+export function setGameStoreClient(client: SupabaseLike): void {
   _client = client;
 }
-
-// --- Key helpers ---
-const GAME_KEY = (code: string) => `durak:game:${code}`;
-const PLAYER_KEY = (telegramId: number) => `durak:player:${telegramId}`;
-const GAME_PLAYERS_SET = (code: string) => `durak:game_players:${code}`;
-const GAME_ACTIONS_LIST = (code: string) => `durak:actions:${code}`;
-const PLAYER_GAME_KEY = (telegramId: number) => `durak:player_game:${telegramId}`;
-const ACTIVE_GAMES_SET = "durak:active_games";
 
 // --- Game Store API ---
 
 export async function saveGame(game: Game): Promise<void> {
-  const client = getClient();
-  await client.set(GAME_KEY(game.game_code), JSON.stringify(game));
-  if (game.status === "lobby" || game.status === "playing") {
-    await client.sadd(ACTIVE_GAMES_SET, game.game_code);
-  }
+  const client = await initClient();
+  const { error } = await client.from("games").upsert({
+    game_code: game.game_code,
+    chat_id: game.chat_id,
+    status: game.status,
+    trump_suit: game.trump_suit,
+    trump_card: game.trump_card,
+    deck: game.deck,
+    discard: game.discard,
+    table_cards: game.table_cards,
+    current_attacker_index: game.current_attacker_index,
+    current_defender_index: game.current_defender_index,
+    player_count: game.player_count,
+    attacker_ids: game.attacker_ids,
+    passed_ids: game.passed_ids,
+    round_over: game.round_over,
+    created_at: game.created_at,
+  }, { onConflict: "game_code" });
+  if (error) throw new Error(`Failed to save game: ${JSON.stringify(error)}`);
 }
 
 export async function getGame(code: string): Promise<Game | null> {
-  const client = getClient();
-  const raw = await client.get(GAME_KEY(code));
-  if (!raw) return null;
-  return JSON.parse(raw) as Game;
+  const client = await initClient();
+  const { data, error } = await client.from("games").select("*").eq("game_code", code);
+  if (error) throw new Error(`Failed to load game: ${JSON.stringify(error)}`);
+  if (!data || (data as unknown[]).length === 0) return null;
+  return (data as unknown[])[0] as Game;
 }
 
 export async function deleteGame(code: string): Promise<void> {
-  const client = getClient();
-  await client.del(GAME_KEY(code));
-  await client.srem(ACTIVE_GAMES_SET, code);
+  const client = await initClient();
+  await client.from("games").delete().eq("game_code", code);
+  await client.from("players").delete().eq("game_code", code);
+  await client.from("actions").delete().eq("game_code", code);
 }
 
 export async function savePlayer(player: Player): Promise<void> {
-  const client = getClient();
-  await client.set(PLAYER_KEY(player.telegram_id), JSON.stringify(player));
-  await client.set(PLAYER_GAME_KEY(player.telegram_id), player.game_code);
-  await client.sadd(GAME_PLAYERS_SET(player.game_code), String(player.telegram_id));
+  const client = await initClient();
+  const { error } = await client.from("players").upsert({
+    telegram_id: player.telegram_id,
+    game_code: player.game_code,
+    seat_index: player.seat_index,
+    hand: player.hand,
+    status: player.status,
+    joined_at: player.joined_at,
+  }, { onConflict: "telegram_id" });
+  if (error) throw new Error(`Failed to save player: ${JSON.stringify(error)}`);
 }
 
 export async function getPlayer(telegramId: number): Promise<Player | null> {
-  const client = getClient();
-  const raw = await client.get(PLAYER_KEY(telegramId));
-  if (!raw) return null;
-  return JSON.parse(raw) as Player;
+  const client = await initClient();
+  const { data, error } = await client.from("players").select("*").eq("telegram_id", telegramId);
+  if (error) throw new Error(`Failed to load player: ${JSON.stringify(error)}`);
+  if (!data || (data as unknown[]).length === 0) return null;
+  return (data as unknown[])[0] as Player;
 }
 
 export async function getPlayerGameCode(telegramId: number): Promise<string | null> {
-  const client = getClient();
-  return await client.get(PLAYER_GAME_KEY(telegramId));
+  const player = await getPlayer(telegramId);
+  return player?.game_code ?? null;
 }
 
 export async function getGamePlayers(code: string): Promise<Player[]> {
-  const client = getClient();
-  const ids = await client.smembers(GAME_PLAYERS_SET(code));
-  if (ids.length === 0) return [];
-  const raws = await client.mget(...ids.map(id => PLAYER_KEY(Number(id))));
-  return raws.filter(Boolean).map(r => JSON.parse(r!)) as Player[];
+  const client = await initClient();
+  const { data, error } = await client.from("players")
+    .select("*")
+    .eq("game_code", code)
+    .order("seat_index", { ascending: true })
+    .limit(100);
+  if (error) throw new Error(`Failed to load players: ${JSON.stringify(error)}`);
+  return (data ?? []) as Player[];
 }
 
 export async function getGamePlayerCount(code: string): Promise<number> {
-  const client = getClient();
-  const count = await client.scard(GAME_PLAYERS_SET(code));
-  return Number(count);
+  const players = await getGamePlayers(code);
+  return players.length;
 }
 
 export async function removePlayer(telegramId: number, gameCode: string): Promise<void> {
-  const client = getClient();
-  await client.srem(GAME_PLAYERS_SET(gameCode), String(telegramId));
-  await client.del(PLAYER_GAME_KEY(telegramId));
-  await client.del(PLAYER_KEY(telegramId));
+  const client = await initClient();
+  await client.from("players").delete().eq("telegram_id", telegramId);
 }
 
 export async function removeAllPlayers(gameCode: string): Promise<void> {
-  const client = getClient();
-  const ids = await client.smembers(GAME_PLAYERS_SET(gameCode));
-  for (const id of ids) {
-    await client.del(PLAYER_KEY(Number(id)));
-    await client.del(PLAYER_GAME_KEY(Number(id)));
-  }
-  await client.del(GAME_PLAYERS_SET(gameCode));
+  const client = await initClient();
+  await client.from("players").delete().eq("game_code", gameCode);
 }
 
 export async function saveAction(action: Action): Promise<void> {
-  const client = getClient();
-  const key = GAME_ACTIONS_LIST(action.game_code);
-  // Append action as JSON in a set keyed by timestamp
-  await client.sadd(key, JSON.stringify(action));
+  const client = await initClient();
+  const { error } = await client.from("actions").insert({
+    player_id: action.player_id,
+    game_code: action.game_code,
+    action_type: action.action_type,
+    timestamp: action.timestamp,
+  });
+  if (error) {
+    // Non-fatal: audit log failure should not block gameplay
+    console.warn("[game-store] Failed to save action:", error);
+  }
 }
 
 export async function getActiveGameCodes(): Promise<string[]> {
-  const client = getClient();
-  return await client.smembers(ACTIVE_GAMES_SET);
+  const client = await initClient();
+  const [lobbyRes, playingRes] = await Promise.all([
+    client.from("games").select("game_code").eq("status", "lobby"),
+    client.from("games").select("game_code").eq("status", "playing"),
+  ]);
+  const codes: string[] = [];
+  for (const row of ((lobbyRes.data ?? []) as { game_code: string }[])) {
+    codes.push(row.game_code);
+  }
+  for (const row of ((playingRes.data ?? []) as { game_code: string }[])) {
+    codes.push(row.game_code);
+  }
+  return codes;
 }

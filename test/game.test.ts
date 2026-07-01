@@ -19,6 +19,17 @@ describe("deck", () => {
     expect(shuffled1).not.toEqual(deck);
   });
 
+  it("shuffled deck has 36 valid cards, no undefined entries", () => {
+    const deck = createDeck();
+    const shuffled = shuffleDeck(deck, 42);
+    expect(shuffled.length).toBe(36);
+    for (const card of shuffled) {
+      expect(card).toBeDefined();
+      expect(typeof card.rank).toBe("string");
+      expect(typeof card.suit).toBe("string");
+    }
+  });
+
   it("trump suit is from the bottom card", () => {
     const deck = createDeck();
     const shuffled = shuffleDeck(deck, 123);

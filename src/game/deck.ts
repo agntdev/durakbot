@@ -25,7 +25,7 @@ export function shuffleDeck(deck: Card[], seed: number): Card[] {
   let s = seed;
   for (let i = cards.length - 1; i > 0; i--) {
     s = (s * 1664525 + 1013904223) & 0xffffffff;
-    const j = s >>> 0 % (i + 1);
+    const j = (s >>> 0) % (i + 1);
     [cards[i], cards[j]] = [cards[j], cards[i]];
   }
   return cards;
