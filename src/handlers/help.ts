@@ -2,15 +2,18 @@ import { Composer } from "grammy";
 import type { Ctx } from "../bot.js";
 import { inlineButton, inlineKeyboard } from "../toolkit/index.js";
 
-// /help — plain-language explanation for non-technical users. This bot is
-// button-driven: tell the user to tap /start to open the menu rather than listing
-// slash commands. The same text is shown when the user taps the Help button on the
-// main menu (`menu:help`). Enhance the copy for your specific bot; keep it short.
 const composer = new Composer<Ctx>();
 
 const HELP =
-  "ℹ️ Tap /start to open the menu, then pick what you want from the buttons.\n\n" +
-  "Everything in this bot is reachable by tapping — you don't need to remember any commands.";
+  "🃏 Durak — how to play\n\n" +
+  "Create or join a lobby, then the host starts the game. Each player gets 6 cards. " +
+  "The bottom card of the deck sets the trump suit.\n\n" +
+  "Turns: one player attacks, the next defends. Beat attacks with a higher card of " +
+  "the same suit, or any trump. If you can't or won't defend, you take all the cards " +
+  "on the table.\n\n" +
+  "At the end of each round, players draw back up to 6 cards. The last player " +
+  "holding cards is the Durak.\n\n" +
+  "Tap /start to open the menu.";
 
 const backToMenu = inlineKeyboard([[inlineButton("⬅️ Back to menu", "menu:main")]]);
 

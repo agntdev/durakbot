@@ -1,0 +1,16 @@
+[
+  {
+    "name": "/begin when not in a game",
+    "steps": [
+      {
+        "send": { "text": "/begin", "chatId": 1, "userId": 400 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": { "text": "You're not in a lobby. Create or join one first." }
+          }
+        ]
+      }
+    ]
+  }
+]

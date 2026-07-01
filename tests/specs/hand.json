@@ -1,0 +1,16 @@
+[
+  {
+    "name": "/hand when not in a game",
+    "steps": [
+      {
+        "send": { "text": "/hand", "chatId": 1, "userId": 500 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": { "text": "You're not in a game. Create or join one first." }
+          }
+        ]
+      }
+    ]
+  }
+]

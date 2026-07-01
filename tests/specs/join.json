@@ -1,0 +1,16 @@
+[
+  {
+    "name": "/join without a code shows help",
+    "steps": [
+      {
+        "send": { "text": "/join", "chatId": 1, "userId": 200 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": { "text": "Send the 4-letter game code to join, like:\n/join ABCD" }
+          }
+        ]
+      }
+    ]
+  }
+]
