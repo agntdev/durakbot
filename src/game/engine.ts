@@ -59,7 +59,7 @@ function cryptoSeed(): number {
 /**
  * Generate a v4-style UUID for correlation tracking.
  */
-function generateCorrelationId(): string {
+export function generateCorrelationId(): string {
   const hex = "0123456789abcdef";
   let id = "";
   for (let i = 0; i < 36; i++) {
@@ -134,7 +134,7 @@ export async function createGame(
           error_message: errorMessage,
           stack_trace: null,
         });
-        throw new ActiveGameError(errorMessage);
+        throw new ActiveGameError(errorMessage, correlationId);
       }
     }
 
@@ -155,7 +155,7 @@ export async function createGame(
           error_message: errorMessage,
           stack_trace: null,
         });
-        throw new PlayerInGameError(errorMessage, existingGame.game_code);
+        throw new PlayerInGameError(errorMessage, existingGame.game_code, correlationId);
       }
     }
 
@@ -258,25 +258,41 @@ export async function createGame(
       // Best-effort audit logging
     }
 
-    throw err;
+    throw err instanceof ActiveGameError || err instanceof PlayerInGameError
+      ? err
+      : new GameCreationError(errorMessage, correlationId);
   }
 }
 
 /** Error: chat already has an active game. */
 export class ActiveGameError extends Error {
-  constructor(message: string) {
+  correlationId: string;
+  constructor(message: string, correlationId: string) {
     super(message);
     this.name = "ActiveGameError";
+    this.correlationId = correlationId;
   }
 }
 
 /** Error: player is in an existing game. */
 export class PlayerInGameError extends Error {
   gameCode: string;
-  constructor(message: string, gameCode: string) {
+  correlationId: string;
+  constructor(message: string, gameCode: string, correlationId: string) {
     super(message);
     this.name = "PlayerInGameError";
     this.gameCode = gameCode;
+    this.correlationId = correlationId;
+  }
+}
+
+/** Error: transient game-creation failure with correlation tracking. */
+export class GameCreationError extends Error {
+  correlationId: string;
+  constructor(message: string, correlationId: string) {
+    super(message);
+    this.name = "GameCreationError";
+    this.correlationId = correlationId;
   }
 }
 
