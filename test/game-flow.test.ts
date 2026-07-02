@@ -8,12 +8,16 @@ import {
   takeCards,
   resolveRound,
   leaveGame,
+  createGame,
+  ActiveGameError,
+  PlayerInGameError,
 } from "../src/game/engine.js";
 import {
   resetGameStoreClient,
   saveGame,
   savePlayer,
   getPlayer,
+  setChatGameIndex,
 } from "../src/game/store.js";
 import type { Game, Player } from "../src/game/types.js";
 
@@ -264,5 +268,37 @@ describe("game engine — full game flow", () => {
     const result = await leaveGame(100);
     expect(result.ok).toBe(true);
     expect(result.message).toContain("not enough players");
+  });
+
+  it("createGame succeeds and creates audit event", async () => {
+    const result = await createGame(1, 100);
+    expect(result.game).toBeDefined();
+    expect(result.game.status).toBe("lobby");
+    expect(result.game.player_count).toBe(1);
+    expect(result.game.chat_id).toBe(1);
+    expect(result.correlationId).toBeDefined();
+
+    // Player should be saved
+    const player = await getPlayer(100);
+    expect(player).not.toBeNull();
+    expect(player!.game_code).toBe(result.game.game_code);
+  });
+
+  it("createGame blocks duplicates in same group chat", async () => {
+    // Create first game in group chat
+    const first = await createGame(1, 100, true);
+    expect(first.game).toBeDefined();
+
+    // Second game from different user in same group chat should fail
+    await expect(createGame(1, 200, true)).rejects.toThrow(ActiveGameError);
+  });
+
+  it("createGame detects when player already in a game", async () => {
+    // Create first game in private chat (no group conflict check)
+    const first = await createGame(1, 100, false);
+    expect(first.game).toBeDefined();
+
+    // Same user tries to create another game (different chat) — should fail
+    await expect(createGame(2, 100, false)).rejects.toThrow(PlayerInGameError);
   });
 });

@@ -4,7 +4,7 @@
  * Falls back to in-memory Map when REDIS_URL is not set (dev/testing).
  */
 import { createRequire } from "node:module";
-import type { Game, Player, Action, TableCard, Card } from "./types.js";
+import type { Game, Player, Action, TableCard, Card, AuditEvent } from "./types.js";
 
 export interface RedisLike {
   get(key: string): Promise<string | null>;
@@ -139,6 +139,9 @@ const GAME_PLAYERS_SET = (code: string) => `durak:game_players:${code}`;
 const GAME_ACTIONS_LIST = (code: string) => `durak:actions:${code}`;
 const PLAYER_GAME_KEY = (telegramId: number) => `durak:player_game:${telegramId}`;
 const ACTIVE_GAMES_SET = "durak:active_games";
+const CHAT_GAME_INDEX = (chatId: number) => `durak:chat_game:${chatId}`;
+const AUDIT_EVENT_COUNTER = "durak:audit:counter";
+const AUDIT_EVENT_KEY = (id: number) => `durak:audit:${id}`;
 
 // --- Game Store API ---
 
@@ -204,8 +207,51 @@ export async function getGame(code: string): Promise<Game | null> {
 
 export async function deleteGame(code: string): Promise<void> {
   const client = getClient();
+  // Clean up chat-game index
+  const game = await getGame(code);
+  if (game) {
+    await client.del(CHAT_GAME_INDEX(game.chat_id));
+  }
   await client.del(GAME_KEY(code));
   await client.srem(ACTIVE_GAMES_SET, code);
+}
+
+/** Store a chat→game_code mapping for one-active-game-per-chat enforcement. */
+export async function setChatGameIndex(chatId: number, gameCode: string): Promise<void> {
+  const client = getClient();
+  await client.set(CHAT_GAME_INDEX(chatId), gameCode);
+}
+
+/** Remove a chat→game_code mapping. */
+export async function clearChatGameIndex(chatId: number): Promise<void> {
+  const client = getClient();
+  await client.del(CHAT_GAME_INDEX(chatId));
+}
+
+/** Get the active game code for a chat, or null. */
+export async function getChatGameCode(chatId: number): Promise<string | null> {
+  const client = getClient();
+  return await client.get(CHAT_GAME_INDEX(chatId));
+}
+
+/** Check if a chat already has an active (non-finished) game. */
+export async function chatHasActiveGame(chatId: number): Promise<boolean> {
+  const code = await getChatGameCode(chatId);
+  if (!code) return false;
+  const game = await getGame(code);
+  return game !== null && game.status !== "finished";
+}
+
+// --- Audit Events ---
+
+/** Save an audit event to persistent storage. */
+export async function saveAuditEvent(event: AuditEvent): Promise<void> {
+  const client = getClient();
+  const id = await client.incr(AUDIT_EVENT_COUNTER);
+  const key = AUDIT_EVENT_KEY(id);
+  event.id = String(id);
+  event.created_at = event.created_at ?? Date.now();
+  await client.set(key, JSON.stringify(event));
 }
 
 export async function savePlayer(player: Player): Promise<void> {
