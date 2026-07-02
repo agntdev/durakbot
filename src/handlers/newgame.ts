@@ -6,7 +6,7 @@ import {
   registerMainMenuItem,
 } from "../toolkit/index.js";
 import { getPlayer, getGame } from "../game/store.js";
-import { ActiveGameError, PlayerInGameError } from "../game/engine.js";
+import { ActiveGameError, PlayerInGameError, GameCreationError } from "../game/engine.js";
 
 const composer = new Composer<Ctx>();
 
@@ -85,6 +85,16 @@ async function handleNewGame(ctx: Ctx) {
           [inlineButton("⬅️ Back to menu", "menu:main")],
         ]),
       });
+    } else if (err instanceof GameCreationError) {
+      await ctx.reply(
+        `Couldn't create the game (ref: ${err.correlationId.slice(0, 8)}). Try again or contact support.`,
+        {
+          reply_markup: inlineKeyboard([
+            [inlineButton("🔄 Retry", "menu:newgame")],
+            [inlineButton("⬅️ Back to menu", "menu:main")],
+          ]),
+        },
+      );
     } else {
       // Transient / unknown error — show retry button
       await ctx.reply(

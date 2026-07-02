@@ -11,6 +11,7 @@ import {
   createGame,
   ActiveGameError,
   PlayerInGameError,
+  GameCreationError,
 } from "../src/game/engine.js";
 import {
   resetGameStoreClient,
@@ -300,5 +301,33 @@ describe("game engine — full game flow", () => {
 
     // Same user tries to create another game (different chat) — should fail
     await expect(createGame(2, 100, false)).rejects.toThrow(PlayerInGameError);
+  });
+
+  it("concurrent game creation in same group chat: only first succeeds", async () => {
+    // Create a game first to set the active-game index
+    const first = await createGame(500, 101, true);
+    expect(first.game).toBeDefined();
+    expect(first.correlationId).toBeDefined();
+    expect(first.correlationId.length).toBeGreaterThan(0);
+
+    // Subsequent attempts in the same group chat should all fail
+    const attempts = [
+      createGame(500, 102, true),
+      createGame(500, 103, true),
+    ];
+
+    await expect(attempts[0]).rejects.toThrow(ActiveGameError);
+    await expect(attempts[1]).rejects.toThrow(ActiveGameError);
+  });
+
+  it("concurrent game creation in different chats allows multiple games", async () => {
+    // Two users in different private chats should both succeed
+    const promises = [
+      createGame(600, 201, false),
+      createGame(601, 202, false),
+    ];
+
+    const results = await Promise.allSettled(promises);
+    expect(results.filter(r => r.status === "fulfilled")).toHaveLength(2);
   });
 });
