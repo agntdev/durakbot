@@ -79,6 +79,23 @@ export function cardDisplay(card: Card): string {
   return `${SUIT_EMOJI[card.suit]}${card.rank}`;
 }
 
+/**
+ * Audit event for tracking game-creation attempts (and other sensitive operations).
+ * Written to persistent storage regardless of success/failure.
+ */
+export interface AuditEvent {
+  id?: string;
+  correlation_id: string;
+  event_type: string;
+  user_id: number;
+  chat_id: number;
+  payload: Record<string, unknown>;
+  result: "success" | "failure";
+  error_message: string | null;
+  stack_trace: string | null;
+  created_at?: number;
+}
+
 /** Encode a card as a compact string for callback data (≤64 bytes). */
 export function cardKey(card: Card): string {
   const s = card.suit[0].toUpperCase(); // S, H, D, C

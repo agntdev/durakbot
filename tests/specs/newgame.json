@@ -9,5 +9,25 @@
         ]
       }
     ]
+  },
+  {
+    "name": "/newgame when already in a game shows error",
+    "steps": [
+      {
+        "send": { "text": "/newgame", "chatId": 1, "userId": 100 },
+        "expect": [
+          { "method": "sendMessage" }
+        ]
+      },
+      {
+        "send": { "text": "/newgame", "chatId": 1, "userId": 100 },
+        "expect": [
+          {
+            "method": "sendMessage",
+            "payload": { "text": "You're already in a game. Leave it first before creating a new one." }
+          }
+        ]
+      }
+    ]
   }
 ]

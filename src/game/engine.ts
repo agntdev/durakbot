@@ -2,7 +2,7 @@
  * Game orchestration logic — creates games, processes turns, handles phase
  * transitions, and interfaces between the persistent store and the card engine.
  */
-import type { Game, Player, Card, TableCard, Suit } from "./types.js";
+import type { Game, Player, Card, TableCard, Suit, AuditEvent } from "./types.js";
 import {
   createDeck,
   shuffleDeck,
@@ -19,12 +19,18 @@ import {
   getGame,
   savePlayer,
   getPlayer,
+  getPlayerGameCode,
   getGamePlayers,
   getGamePlayerCount,
   removePlayer,
   removeAllPlayers,
   saveAction,
   deleteGame,
+  saveAuditEvent,
+  setChatGameIndex,
+  clearChatGameIndex,
+  chatHasActiveGame,
+  getChatGameCode,
   ConcurrentModificationError,
 } from "./store.js";
 import { now } from "./clock.js";
@@ -50,56 +56,228 @@ function cryptoSeed(): number {
   }
 }
 
-/** Create a new lobby game. Host joins as first player. */
+/**
+ * Generate a v4-style UUID for correlation tracking.
+ */
+function generateCorrelationId(): string {
+  const hex = "0123456789abcdef";
+  let id = "";
+  for (let i = 0; i < 36; i++) {
+    if (i === 8 || i === 13 || i === 18 || i === 23) {
+      id += "-";
+    } else if (i === 14) {
+      id += "4";
+    } else if (i === 19) {
+      id += hex[(Math.floor(Math.random() * 4) + 8)];
+    } else {
+      id += hex[Math.floor(Math.random() * 16)];
+    }
+  }
+  return id;
+}
+
+/** Helper: run a DB operation with one retry + short exponential backoff. */
+async function withRetry<T>(fn: () => Promise<T>, context: string): Promise<T> {
+  const maxAttempts = 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt === maxAttempts) throw err;
+      // Only retry on transient-like errors
+      const msg = String(err);
+      const isTransient =
+        msg.includes("timeout") ||
+        msg.includes("ETIMEDOUT") ||
+        msg.includes("ECONNRESET") ||
+        msg.includes("ECONNREFUSED") ||
+        msg.includes("network") ||
+        msg.includes("429") ||
+        msg.includes("500") ||
+        msg.includes("503");
+      if (!isTransient) throw err;
+      // Exponential backoff: ~200ms then ~400ms
+      await new Promise(r => setTimeout(r, 200 * attempt));
+    }
+  }
+  throw new Error(`retry exhausted for ${context}`);
+}
+
+/** Create a new lobby game with idempotent, transactional creation and audit logging. */
 export async function createGame(
   chatId: number,
   hostId: number,
-): Promise<{ game: Game }> {
-  // Generate unique code
-  let code = "";
-  for (let attempt = 0; attempt < 100; attempt++) {
-    code = generateGameCode();
-    const existing = await getGame(code);
-    if (!existing) break;
-    if (attempt === 99) throw new Error("Could not generate a unique game code");
+  isGroupChat = false,
+): Promise<{ game: Game; correlationId: string }> {
+  const correlationId = generateCorrelationId();
+  const payload: Record<string, unknown> = { chatId, hostId };
+  let result: "success" | "failure" = "failure";
+  let errorMessage: string | null = null;
+  let stackTrace: string | null = null;
+
+  try {
+    // Check for active game in this chat (group chats only — private DMs manage
+    // many simultaneous games by game code)
+    if (isGroupChat) {
+      const existing = await withRetry(() => chatHasActiveGame(chatId), "createGame:activeCheck");
+      if (existing) {
+        const existingCode = await getChatGameCode(chatId);
+        errorMessage = `A game (${existingCode}) is already active in this chat.`;
+        result = "failure";
+        await saveAuditEvent({
+          correlation_id: correlationId,
+          event_type: "game_create_attempt",
+          user_id: hostId,
+          chat_id: chatId,
+          payload,
+          result,
+          error_message: errorMessage,
+          stack_trace: null,
+        });
+        throw new ActiveGameError(errorMessage);
+      }
+    }
+
+    // Check if player is already in a game
+    const playerGameCode = await getPlayerGameCode(hostId);
+    if (playerGameCode) {
+      const existingGame = await getGame(playerGameCode);
+      if (existingGame && existingGame.status !== "finished") {
+        errorMessage = "You're already in a game. Leave it first.";
+        result = "failure";
+        await saveAuditEvent({
+          correlation_id: correlationId,
+          event_type: "game_create_attempt",
+          user_id: hostId,
+          chat_id: chatId,
+          payload,
+          result,
+          error_message: errorMessage,
+          stack_trace: null,
+        });
+        throw new PlayerInGameError(errorMessage, existingGame.game_code);
+      }
+    }
+
+    // Generate unique code
+    let code = "";
+    for (let attempt = 0; attempt < 100; attempt++) {
+      code = generateGameCode();
+      const existing = await getGame(code);
+      if (!existing) break;
+      if (attempt === 99) {
+        errorMessage = "Could not generate a unique game code";
+        result = "failure";
+        await saveAuditEvent({
+          correlation_id: correlationId,
+          event_type: "game_create_attempt",
+          user_id: hostId,
+          chat_id: chatId,
+          payload,
+          result,
+          error_message: errorMessage,
+          stack_trace: null,
+        });
+        throw new Error(errorMessage);
+      }
+    }
+
+    const seed = cryptoSeed();
+    const deck = shuffleDeck(createDeck(), seed);
+    const trump_suit = trumpSuitFromDeck(deck);
+    const trump_card = deck[deck.length - 1];
+
+    const game: Game = {
+      game_code: code,
+      chat_id: chatId,
+      status: "lobby",
+      trump_suit,
+      trump_card,
+      deck,
+      discard: [],
+      table_cards: [],
+      current_attacker_index: 0,
+      current_defender_index: 0,
+      player_count: 1,
+      attacker_ids: [],
+      passed_ids: [],
+      round_over: false,
+      created_at: now(),
+      version: 0,
+    };
+
+    // Transactional: save game + chat index first
+    await withRetry(() => saveGameWithVersion(game), "createGame:saveGame");
+    await withRetry(() => setChatGameIndex(chatId, code), "createGame:chatIndex");
+
+    // Then save player
+    const player: Player = {
+      telegram_id: hostId,
+      game_code: code,
+      seat_index: 0,
+      hand: [],
+      status: "playing",
+      joined_at: now(),
+    };
+    await withRetry(() => savePlayer(player), "createGame:savePlayer");
+
+    result = "success";
+    await saveAuditEvent({
+      correlation_id: correlationId,
+      event_type: "game_create_attempt",
+      user_id: hostId,
+      chat_id: chatId,
+      payload: { ...payload, game_code: code },
+      result,
+      error_message: null,
+      stack_trace: null,
+    });
+
+    return { game, correlationId };
+  } catch (err) {
+    // If it's one of our known error types, re-throw as-is
+    if (err instanceof ActiveGameError || err instanceof PlayerInGameError) throw err;
+
+    errorMessage = String(err);
+    stackTrace = err instanceof Error ? (err.stack ?? null) : null;
+    result = "failure";
+
+    // Audit the failure
+    try {
+      await saveAuditEvent({
+        correlation_id: correlationId,
+        event_type: "game_create_attempt",
+        user_id: hostId,
+        chat_id: chatId,
+        payload,
+        result,
+        error_message: errorMessage,
+        stack_trace: stackTrace,
+      });
+    } catch {
+      // Best-effort audit logging
+    }
+
+    throw err;
   }
+}
 
-  const seed = cryptoSeed();
-  const deck = shuffleDeck(createDeck(), seed);
-  const trump_suit = trumpSuitFromDeck(deck);
-  const trump_card = deck[deck.length - 1];
+/** Error: chat already has an active game. */
+export class ActiveGameError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ActiveGameError";
+  }
+}
 
-  const game: Game = {
-    game_code: code,
-    chat_id: chatId,
-    status: "lobby",
-    trump_suit,
-    trump_card,
-    deck,
-    discard: [],
-    table_cards: [],
-    current_attacker_index: 0,
-    current_defender_index: 0,
-    player_count: 1,
-    attacker_ids: [],
-    passed_ids: [],
-    round_over: false,
-    created_at: now(),
-    version: 0,
-  };
-  await saveGameWithVersion(game);
-
-  const player: Player = {
-    telegram_id: hostId,
-    game_code: code,
-    seat_index: 0,
-    hand: [],
-    status: "playing",
-    joined_at: now(),
-  };
-  await savePlayer(player);
-
-  return { game };
+/** Error: player is in an existing game. */
+export class PlayerInGameError extends Error {
+  gameCode: string;
+  constructor(message: string, gameCode: string) {
+    super(message);
+    this.name = "PlayerInGameError";
+    this.gameCode = gameCode;
+  }
 }
 
 /** Join an existing lobby by game code. */
@@ -477,6 +655,8 @@ export async function resolveRound(
       p.status = "finished";
       await savePlayer(p);
     }
+    // Clear chat index so a new game can be created
+    await clearChatGameIndex(game.chat_id);
     standings = computeStandings(
       players.map(p => ({
         telegram_id: p.telegram_id,
@@ -546,7 +726,7 @@ export async function leaveGame(
     }
 
     if (count === 0) {
-      await deleteGame(player.game_code);
+      await deleteGame(player.game_code); // also clears chat index
       return { ok: true, message: "You left. The lobby was cancelled — no players left." };
     }
 
@@ -606,6 +786,8 @@ export async function leaveGame(
         const err = await saveGameAtomic(game);
         if (err) return { ok: false, error: err };
       }
+      // Clear chat index so a new game can be created
+      await clearChatGameIndex(game.chat_id);
       if (activePlayers.length === 1) {
         activePlayers[0].status = "finished";
         await savePlayer(activePlayers[0]);
